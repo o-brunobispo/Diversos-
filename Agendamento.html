@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agendamento Online</title>
+  <style>
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    body { background-color: #f4f6f8; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; }
+    .card { background: #fff; padding: 32px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); width: 100%; max-width: 440px; }
+    h2 { margin-top: 0; color: #1e293b; text-align: center; }
+    .field { margin-bottom: 16px; }
+    label { display: block; font-size: 14px; font-weight: 600; color: #475569; margin-bottom: 6px; }
+    input, select { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; outline: none; }
+    input:focus, select:focus { border-color: #2563eb; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    button { width: 100%; padding: 12px; background: #2563eb; color: #fff; border: none; border-radius: 6px; font-size: 16px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+    #statusMessage { margin-top: 16px; font-size: 14px; text-align: center; font-weight: 500; }
+    .success { color: #16a34a; }
+    .error { color: #dc2626; }
+    .loading-slots { font-size: 12px; color: #64748b; margin-top: 4px; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h2>Agendar Horário</h2>
+  <form id="bookingForm">
+    <div class="field">
+      <label for="nome">Nome Completo</label>
+      <input type="text" id="nome" required>
+    </div>
+
+    <div class="field">
+      <label for="email">E-mail</label>
+      <input type="email" id="email" required>
+    </div>
+
+    <div class="field">
+      <label for="telefone">WhatsApp / Telefone</label>
+      <input type="tel" id="telefone" placeholder="(DDD) 99999-9999" maxlength="15" required>
+    </div>
+
+    <div class="field">
+      <label for="servico">Serviço</label>
+      <select id="servico" required>
+        <option value="Massoterapia">Massoterapia</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label for="data">Data</label>
+        <input type="date" id="data" required>
+      </div>
+      <div class="field">
+        <label for="horario">Horário</label>
+        <select id="horario" required disabled>
+          <option value="">Escolha serviço e data</option>
+        </select>
+        <div id="slotNotice" class="loading-slots"></div>
+      </div>
+    </div>
+
+    <button type="submit" id="btnSubmit">Confirmar Agendamento</button>
+    <div id="statusMessage"></div>
+  </form>
+</div>
+
+<script>
+  const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzm2KOLDcz8Dzg-aEHH56Gx2xhiSjmEjP2FCE8O1cAUCpooNawhQVOUIG18lA_XRKzW/exec';
+
+  const telInput = document.getElementById('telefone');
+  const servicoSelect = document.getElementById('servico');
+  const dataInput = document.getElementById('data');
+  const horarioSelect = document.getElementById('horario');
+  const slotNotice = document.getElementById('slotNotice');
+  const form = document.getElementById('bookingForm');
+  const btnSubmit = document.getElementById('btnSubmit');
+  const statusMsg = document.getElementById('statusMessage');
+
+  // ==========================================
+  // 1. MÁSCARA DE TELEFONE (PADRÃO BRASIL)
+  // ==========================================
+  telInput.addEventListener('input', (e) => {
+    let value = e.target.value.replace(/\D/g, '');
+    if (value.length > 11) value = value.slice(0, 11);
+
+    if (value.length > 10) {
+      value = value.replace(/^(\d{2})(\d{5})(\d{4})$/, '($1) $2-$3');
+    } else if (value.length > 6) {
+      value = value.replace(/^(\d{2})(\d{4})(\d{0,4})$/, '($1) $2-$3');
+    } else if (value.length > 2) {
+      value = value.replace(/^(\d{2})(\d{0,5})$/, '($1) $2');
+    } else if (value.length > 0) {
+      value = value.replace(/^(\d*)$/, '($1');
+    }
+    e.target.value = value;
+  });
+
+  // ==========================================
+  // 2. LIMITES DE DATAS (HOJE ATÉ 30 DIAS)
+  // ==========================================
+  const DIAS_LIMITE = 30;
+
+  const agora = new Date();
+  dataInput.min = agora.toISOString().split('T')[0];
+
+  const limiteFuturo = new Date();
+  limiteFuturo.setDate(agora.getDate() + DIAS_LIMITE);
+  dataInput.max = limiteFuturo.toISOString().split('T')[0];
+
+  // ==========================================
+  // 3. CONSULTA DE HORÁRIOS DISPONÍVEIS
+  // ==========================================
+  async function carregarHorariosDisponiveis() {
+    const dataSelecionada = dataInput.value;
+    const servicoSelecionado = servicoSelect.value;
+
+    if (dataSelecionada > dataInput.max || dataSelecionada < dataInput.min) {
+      horarioSelect.disabled = true;
+      horarioSelect.innerHTML = '<option value="">Data fora do período permitido</option>';
+      slotNotice.textContent = `Apenas agendamentos para os próximos ${DIAS_LIMITE} dias.`;
+      return;
+    }
+
+    if (!dataSelecionada || !servicoSelecionado) {
+      horarioSelect.disabled = true;
+      horarioSelect.innerHTML = '<option value="">Escolha serviço e data</option>';
+      slotNotice.textContent = '';
+      return;
+    }
+
+    horarioSelect.disabled = true;
+    horarioSelect.innerHTML = '<option value="">Consultando horários...</option>';
+    slotNotice.textContent = 'Verificando disponibilidade...';
+
+    try {
+      const url = `${SCRIPT_URL}?data=${encodeURIComponent(dataSelecionada)}&servico=${encodeURIComponent(servicoSelecionado)}`;
+      const response = await fetch(url);
+      const result = await response.json();
+      
+      const grade = result.grade || [];
+      const ocupados = result.ocupados || [];
+
+      horarioSelect.innerHTML = '<option value="">Selecione um horário</option>';
+      let livresCount = 0;
+
+      grade.forEach(hora => {
+        const option = document.createElement('option');
+        option.value = hora;
+
+        if (ocupados.includes(hora)) {
+          option.textContent = `${hora} (Indisponível)`;
+          option.disabled = true;
+        } else {
+          option.textContent = hora;
+          livresCount++;
+        }
+        horarioSelect.appendChild(option);
+      });
+
+      if (livresCount === 0) {
+        slotNotice.textContent = 'Nenhum horário disponível para este serviço nesta data.';
+      } else {
+        slotNotice.textContent = '';
+      }
+
+      horarioSelect.disabled = false;
+    } catch (err) {
+      console.error(err);
+      slotNotice.textContent = 'Erro ao buscar horários. Tente novamente.';
+      horarioSelect.innerHTML = '<option value="">Erro ao carregar</option>';
+    }
+  }
+
+  dataInput.addEventListener('change', carregarHorariosDisponiveis);
+  servicoSelect.addEventListener('change', carregarHorariosDisponiveis);
+
+  // ==========================================
+  // 4. ENVIO DO FORMULÁRIO
+  // ==========================================
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    // Validação mínima do telefone (deve ter pelo menos DDD + 8 dígitos)
+    const telDigits = telInput.value.replace(/\D/g, '');
+    if (telDigits.length < 10) {
+      statusMsg.className = 'error';
+      statusMsg.textContent = 'Por favor, digite um número de telefone válido com DDD.';
+      return;
+    }
+
+    btnSubmit.disabled = true;
+    btnSubmit.textContent = 'Confirmando...';
+    statusMsg.textContent = '';
+    statusMsg.className = '';
+
+    const payload = {
+      nome: document.getElementById('nome').value,
+      email: document.getElementById('email').value,
+      telefone: telInput.value,
+      servico: servicoSelect.value,
+      data: dataInput.value,
+      horario: horarioSelect.value
+    };
+
+    try {
+      const response = await fetch(SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+      
+      const res = await response.json();
+
+      if (res.status === 'success') {
+        statusMsg.className = 'success';
+        statusMsg.textContent = res.message;
+        form.reset();
+        horarioSelect.innerHTML = '<option value="">Escolha serviço e data</option>';
+        horarioSelect.disabled = true;
+      } else {
+        statusMsg.className = 'error';
+        statusMsg.textContent = res.message;
+      }
+    } catch (err) {
+      console.error(err);
+      statusMsg.className = 'error';
+      statusMsg.textContent = 'Erro ao processar o agendamento.';
+    } finally {
+      btnSubmit.disabled = false;
+      btnSubmit.textContent = 'Confirmar Agendamento';
+    }
+  });
+</script>
+
+</body>
+</html>
